@@ -132,8 +132,8 @@ Replace "path/to/optionsflow.py" with the full path to where you saved the optio
 
 ## Requirements
 
-- Python 3.8+
-- MCP Server
+- Python 3.12+
+- mcp
 - yfinance
 - pandas
 - numpy
