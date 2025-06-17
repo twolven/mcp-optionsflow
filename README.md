@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/twolven-mcp-optionsflow-badge.png)](https://mseep.ai/app/twolven-mcp-optionsflow)
+
 # OptionsFlow MCP Server
 
 A Model Context Protocol (MCP) server providing advanced options analysis and strategy evaluation through Yahoo Finance. Enables LLMs to analyze options chains, calculate Greeks, and evaluate basic options strategies with comprehensive risk metrics.
