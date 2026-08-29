@@ -45,8 +45,11 @@ def analyze_basic_strategies(
         spot = info.get("currentPrice") or info.get("regularMarketPrice")
         if not spot or not math.isfinite(float(spot)):
             raise ToolError("No valid underlying quote")
-        dividend = float(info.get("trailingAnnualDividendYield") or info.get("dividendYield") or 0)
-        if dividend > 0.25:
+        trailing_yield = info.get("trailingAnnualDividendYield")
+        dividend = float(
+            trailing_yield if trailing_yield is not None else (info.get("dividendYield") or 0)
+        )
+        if trailing_yield is None:
             dividend /= 100
         if not math.isfinite(dividend) or not 0 <= dividend <= 0.25:
             dividend = 0

@@ -46,3 +46,22 @@ def test_expiration_day_boundary_and_dividend_percent_normalization():
 
     with pytest.raises(ToolError):
         server.years_to_expiration(date(2026, 8, 29), datetime(2026, 8, 30, tzinfo=UTC))
+
+
+def test_low_percent_dividend_fallback_is_normalized(monkeypatch):
+    captured = []
+    real_greeks = server.greeks
+
+    def capture(*args, **kwargs):
+        captured.append(args[-1])
+        return real_greeks(*args, **kwargs)
+
+    monkeypatch.setattr(server, "greeks", capture)
+    monkeypatch.setattr(server.provider, "ticker", lambda symbol: object())
+    monkeypatch.setattr(server.provider, "expirations", lambda *args: ["2027-01-15"])
+    monkeypatch.setattr(
+        server.provider, "info", lambda *args: {"currentPrice": 100, "dividendYield": 0.20}
+    )
+    monkeypatch.setattr(server.provider, "chain", lambda *args: chains())
+    server.analyze_basic_strategies("AAPL", "cc", "2027-01-15")
+    assert captured and set(captured) == {0.002}
