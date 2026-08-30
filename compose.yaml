@@ -1,0 +1,10 @@
+name: mcp-optionsflow
+services:
+  optionsflow:
+    build:
+      context: .
+    image: mcp-optionsflow:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MCP_HOST_PORT:-8000}:8000"

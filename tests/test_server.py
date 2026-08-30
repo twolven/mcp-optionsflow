@@ -65,3 +65,25 @@ def test_low_percent_dividend_fallback_is_normalized(monkeypatch):
     monkeypatch.setattr(server.provider, "chain", lambda *args: chains())
     server.analyze_basic_strategies("AAPL", "cc", "2027-01-15")
     assert captured and set(captured) == {0.002}
+
+
+def test_high_fractional_dividend_is_retained_and_warned(monkeypatch):
+    captured = []
+    real_greeks = server.greeks
+
+    def capture(*args, **kwargs):
+        captured.append(args[-1])
+        return real_greeks(*args, **kwargs)
+
+    monkeypatch.setattr(server, "greeks", capture)
+    monkeypatch.setattr(server.provider, "ticker", lambda symbol: object())
+    monkeypatch.setattr(server.provider, "expirations", lambda *args: ["2027-01-15"])
+    monkeypatch.setattr(
+        server.provider,
+        "info",
+        lambda *args: {"currentPrice": 100, "trailingAnnualDividendYield": 0.30},
+    )
+    monkeypatch.setattr(server.provider, "chain", lambda *args: chains())
+    result = server.analyze_basic_strategies("AAPL", "cc", "2027-01-15")
+    assert captured and set(captured) == {0.30}
+    assert any("exceeds 25%" in warning for warning in result["warnings"])

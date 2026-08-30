@@ -1,0 +1,11 @@
+{
+  "_meta": {
+    "captured_at": "2026-08-30",
+    "captured_with": "yfinance 1.7.0",
+    "method": "Ticker('AAPL').get_info()",
+    "purpose": "Pin the observed units of Yahoo's two dividend-yield fields; values are fixtures, not current-price assertions."
+  },
+  "symbol": "AAPL",
+  "trailingAnnualDividendYield": 0.0033377837,
+  "dividendYield": 0.34
+}

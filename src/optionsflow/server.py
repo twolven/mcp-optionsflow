@@ -1,9 +1,12 @@
 import math
+import os
 from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from .domain import cash_secured_put, choose_spread, covered_call, greeks
 from .models import DeltaTarget, Expiration, ResponseEnvelope, Strategy, Symbol, WidthPct
@@ -11,6 +14,12 @@ from .provider import ProviderError, YahooProvider, envelope
 
 mcp = FastMCP("optionsflow")
 provider = YahooProvider()
+
+
+@mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
+async def health(_request: Request) -> JSONResponse:
+    """Report process health without invoking Yahoo Finance."""
+    return JSONResponse({"status": "ok", "service": "optionsflow"})
 
 
 def years_to_expiration(expiration: date, now: datetime | None = None) -> tuple[int, float]:
@@ -51,8 +60,18 @@ def analyze_basic_strategies(
         )
         if trailing_yield is None:
             dividend /= 100
-        if not math.isfinite(dividend) or not 0 <= dividend <= 0.25:
-            dividend = 0
+        if not math.isfinite(dividend) or dividend < 0:
+            raise ToolError("Yahoo Finance returned an invalid dividend yield")
+        warnings = [
+            "Black-Scholes values are theoretical European-model estimates.",
+            "Dividends and American-style early assignment can materially change realized outcomes.",
+            "Yahoo Finance data may be delayed, incomplete, or rate-limited; this is not investment advice.",
+        ]
+        if dividend > 0.25:
+            warnings.append(
+                "Dividend yield exceeds 25%; the provider value was retained, and theoretical "
+                "outputs may be especially sensitive to special distributions or stale data."
+            )
         chain = provider.chain(normalized, expiration_date, ticker)
         rate = 0.04
 
@@ -94,14 +113,7 @@ def analyze_basic_strategies(
             "risk_free_rate": {"value": rate, "source": "configured fallback", "instrument": None},
             "analysis": analysis,
         }
-        return envelope(
-            data,
-            [
-                "Black-Scholes values are theoretical European-model estimates.",
-                "Dividends and American-style early assignment can materially change realized outcomes.",
-                "Yahoo Finance data may be delayed, incomplete, or rate-limited; this is not investment advice.",
-            ],
-        )
+        return envelope(data, warnings)
     except ToolError:
         raise
     except ValueError as exc:
@@ -111,4 +123,16 @@ def analyze_basic_strategies(
 
 
 def main():
-    mcp.run(transport="stdio", show_banner=False)
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        mcp.run(transport="stdio", show_banner=False)
+        return
+    if transport not in {"http", "streamable-http"}:
+        raise ValueError("MCP_TRANSPORT must be stdio, http, or streamable-http")
+    mcp.run(
+        transport="streamable-http",
+        host=os.getenv("MCP_HOST", "127.0.0.1"),
+        port=int(os.getenv("MCP_PORT", "8000")),
+        path=os.getenv("MCP_PATH", "/mcp"),
+        show_banner=False,
+    )
