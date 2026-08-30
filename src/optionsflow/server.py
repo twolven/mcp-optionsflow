@@ -1,0 +1,163 @@
+import math
+import os
+from datetime import UTC, date, datetime, time
+from zoneinfo import ZoneInfo
+
+from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+from .domain import cash_secured_put, choose_spread, covered_call, greeks
+from .models import DeltaTarget, Expiration, ResponseEnvelope, Strategy, Symbol, WidthPct
+from .provider import ProviderError, YahooProvider, envelope
+
+mcp = FastMCP("optionsflow")
+provider = YahooProvider()
+
+
+@mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
+async def health(_request: Request) -> JSONResponse:
+    """Report process health without invoking Yahoo Finance."""
+    return JSONResponse({"status": "ok", "service": "optionsflow"})
+
+
+def years_to_expiration(expiration: date, now: datetime | None = None) -> tuple[int, float]:
+    current = now or datetime.now(UTC)
+    close = datetime.combine(expiration, time(16), ZoneInfo("America/New_York"))
+    remaining = (close.astimezone(UTC) - current.astimezone(UTC)).total_seconds()
+    if remaining <= 0:
+        raise ToolError("Expiration has already passed its 4:00 PM America/New_York close")
+    return max(
+        (expiration - current.astimezone(ZoneInfo("America/New_York")).date()).days, 0
+    ), remaining / (365 * 86400)
+
+
+@mcp.tool
+def analyze_basic_strategies(
+    symbol: Symbol,
+    strategy: Strategy,
+    expiration_date: Expiration,
+    delta_target: DeltaTarget = 0.3,
+    width_pct: WidthPct = 0.05,
+) -> ResponseEnvelope:
+    """Analyze one legacy options strategy using executable quotes and European Black-Scholes estimates."""
+    normalized = symbol.strip().upper()
+    ticker = provider.ticker(normalized)
+    try:
+        expirations = provider.expirations(normalized, ticker)
+        if expiration_date not in expirations:
+            raise ToolError(f"Expiration {expiration_date} is unavailable")
+        expiration = date.fromisoformat(expiration_date)
+        dte, years = years_to_expiration(expiration)
+        info = provider.info(normalized, ticker) or {}
+        spot = info.get("currentPrice") or info.get("regularMarketPrice")
+        if not spot or not math.isfinite(float(spot)):
+            raise ToolError("No valid underlying quote")
+        trailing_yield = info.get("trailingAnnualDividendYield")
+        dividend = float(
+            trailing_yield if trailing_yield is not None else (info.get("dividendYield") or 0)
+        )
+        if trailing_yield is None:
+            dividend /= 100
+        if not math.isfinite(dividend) or dividend < 0:
+            raise ToolError("Yahoo Finance returned an invalid dividend yield")
+        warnings = [
+            "Black-Scholes values are theoretical European-model estimates.",
+            "Dividends and American-style early assignment can materially change realized outcomes.",
+            "Yahoo Finance data may be delayed, incomplete, or rate-limited; this is not investment advice.",
+        ]
+        if dividend > 0.25:
+            warnings.append(
+                "Dividend yield exceeds 25%; the provider value was retained, and theoretical "
+                "outputs may be especially sensitive to special distributions or stale data."
+            )
+        chain = provider.chain(normalized, expiration_date, ticker)
+        rate = 0.04
+
+        def prepare(frame, kind):
+            output = frame.copy()
+            output["greeks"] = [
+                greeks(
+                    float(spot),
+                    float(row.strike),
+                    years,
+                    rate,
+                    float(row.impliedVolatility),
+                    kind,
+                    dividend,
+                )
+                for row in output.itertuples()
+            ]
+            return output[output.greeks.notna()]
+
+        calls, puts = prepare(chain.calls, "call"), prepare(chain.puts, "put")
+        if strategy == "ccs":
+            analysis = choose_spread(calls, float(spot), "call", width_pct, years, rate, dividend)
+        elif strategy == "pcs":
+            analysis = choose_spread(puts, float(spot), "put", width_pct, years, rate, dividend)
+        elif strategy == "csp":
+            analysis = cash_secured_put(puts, float(spot), delta_target)
+        else:
+            analysis = covered_call(calls, float(spot), delta_target)
+        data = {
+            "symbol": normalized,
+            "strategy": strategy.upper(),
+            "current_price": float(spot),
+            "underlying_price": float(spot),
+            "expiration": expiration_date,
+            "expiration_date": expiration_date,
+            "days_to_expiration": dte,
+            "delta_target": delta_target,
+            "width_pct": width_pct,
+            "risk_free_rate": {"value": rate, "source": "configured fallback", "instrument": None},
+            "analysis": analysis,
+        }
+        return envelope(data, warnings)
+    except ToolError:
+        raise
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    except (ProviderError, TimeoutError, ConnectionError, OSError) as exc:
+        raise ToolError(f"Yahoo Finance request failed after bounded retries: {exc}") from exc
+
+
+def csv_env(name: str) -> list[str] | None:
+    """Parse a comma-separated allowlist environment variable."""
+    values = [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
+    return values or None
+
+
+def host_origin_protection() -> bool | str:
+    """Resolve the Host/Origin request-guard mode, enabled unless disabled.
+
+    Streamable HTTP servers bound to loopback remain reachable from a browser
+    through DNS rebinding, so Host and Origin headers are validated by default.
+    """
+    mode = os.getenv("MCP_HOST_ORIGIN_PROTECTION", "true").strip().lower()
+    if mode in {"false", "0", "off", "no"}:
+        return False
+    if mode == "auto":
+        return "auto"
+    if mode in {"true", "1", "on", "yes"}:
+        return True
+    raise ValueError("MCP_HOST_ORIGIN_PROTECTION must be true, auto, or false")
+
+
+def main():
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        mcp.run(transport="stdio", show_banner=False)
+        return
+    if transport not in {"http", "streamable-http"}:
+        raise ValueError("MCP_TRANSPORT must be stdio, http, or streamable-http")
+    mcp.run(
+        transport="streamable-http",
+        host=os.getenv("MCP_HOST", "127.0.0.1"),
+        port=int(os.getenv("MCP_PORT", "8000")),
+        path=os.getenv("MCP_PATH", "/mcp"),
+        host_origin_protection=host_origin_protection(),
+        allowed_hosts=csv_env("MCP_ALLOWED_HOSTS"),
+        allowed_origins=csv_env("MCP_ALLOWED_ORIGINS"),
+        show_banner=False,
+    )

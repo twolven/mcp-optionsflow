@@ -1,6 +1,0 @@
-mcp
-yfinance
-pandas
-numpy
-scipy
-asyncio

@@ -1,166 +1,44 @@
-# OptionsFlow MCP Server
+# OptionsFlow MCP
 
-A Model Context Protocol (MCP) server providing advanced options analysis and strategy evaluation through Yahoo Finance. Enables LLMs to analyze options chains, calculate Greeks, and evaluate basic options strategies with comprehensive risk metrics.
+A typed FastMCP server that analyzes option strategies from Yahoo Finance data. It supports local stdio and containerized Streamable HTTP transports.
 
-## Features
+## Tool
 
-### Options Analysis
-- Complete options chain data processing
-- Greeks calculation (delta, gamma, theta, vega, rho)
-- Implied volatility analysis
-- Probability calculations
-- Risk/reward metrics
+`analyze_basic_strategies(symbol, strategy, expiration_date, delta_target=0.3, width_pct=0.05)` preserves the original public tool name, required arguments, defaults, and strategy values: `ccs`, `pcs`, `csp`, and `cc`. Prices and payoff values distinguish per-share amounts from the standard 100-share contract multiplier. Results include breakeven, maximum profit/loss, return on capital, probability evaluated at the actual breakeven, position Greeks, provider/as-of metadata, warnings, and rejection reasons.
 
-### Strategy Analysis
-- Credit Call Spreads (CCS)
-- Put Credit Spreads (PCS)
-- Cash Secured Puts (CSP)
-- Covered Calls (CC)
-- Position Greeks evaluation
-- Liquidity analysis
-- Risk metrics calculation
-
-### Risk Management
-- Bid-ask spread analysis
-- Volume and open interest validation
-- Position sizing recommendations
-- Maximum loss calculations
-- Probability of profit estimates
-
-## Installation
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Clone the repository
-git clone https://github.com/twolven/mcp-optionsflow.git
-cd mcp-optionsflow
+```powershell
+uv sync --locked
+uv run python optionsflow.py
 ```
 
-## Usage
+The server uses stdio and writes no protocol-unrelated content to stdout. Black-Scholes values are theoretical European-model estimates; dividends and American-style early assignment may make them differ materially from realized outcomes. Yahoo Finance is an unofficial personal-use source and may be delayed, incomplete, rate-limited, or structurally changed. Nothing returned is investment advice or guaranteed real-time data.
 
-Add to your Claude configuration:
-In your `claude-desktop-config.json`, add the following to the `mcpServers` section:
+## Docker / Streamable HTTP
 
-```json
-{
-    "mcpServers": {
-        "optionsflow": {
-            "command": "python",
-            "args": ["path/to/optionsflow.py"]
-        }
-    }
-}
+The container runs as an unprivileged user, installs the locked production dependencies, and serves MCP at `http://127.0.0.1:8000/mcp`. Start it with:
+
+```powershell
+docker compose up --build -d
+Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-Replace "path/to/optionsflow.py" with the full path to where you saved the optionsflow.py file.
+Connect a Streamable HTTP-capable MCP client to `http://127.0.0.1:8000/mcp`. To avoid a port collision when running multiple servers, set `MCP_HOST_PORT` before starting Compose, for example `$env:MCP_HOST_PORT=8001`. Stop and remove the container with `docker compose down`.
 
-## Available Tools
+The Compose mapping intentionally binds to localhost. The endpoint has no authentication or TLS and must not be exposed to an untrusted network without a properly configured reverse proxy and access control.
 
-1. `analyze_basic_strategies`
-```python
-{
-    "symbol": str,                    # Required: Stock symbol
-    "strategy": str,                  # Required: "ccs", "pcs", "csp", or "cc"
-    "expiration_date": str,          # Required: "YYYY-MM-DD"
-    "delta_target": float,           # Optional: Target delta for CSP/CC (default: 0.3)
-    "width_pct": float              # Optional: Width for spreads (default: 0.05)
-}
-```
+Binding to loopback alone does not make the endpoint private: a browser can still reach it through DNS rebinding, so the server validates `Host` and `Origin` headers before a request reaches an MCP session. Requests carrying a foreign `Host` are answered with `421 Misdirected Request` and those carrying a foreign `Origin` with `403 Forbidden`, while same-origin loopback traffic and non-browser clients that send no `Origin` are unaffected.
 
-### Strategy Analysis Response Format
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MCP_TRANSPORT` | `stdio` | `stdio`, `http`, or `streamable-http`. |
+| `MCP_HOST` | `127.0.0.1` | Interface the HTTP server binds. |
+| `MCP_PORT` | `8000` | Port inside the container. |
+| `MCP_PATH` | `/mcp` | Streamable HTTP endpoint path. |
+| `MCP_HOST_PORT` | `8000` | Host port Compose publishes on `127.0.0.1`. |
+| `MCP_HOST_ORIGIN_PROTECTION` | `true` | `true`, `auto`, or `false`. Disable only behind a proxy that performs the same validation. |
+| `MCP_ALLOWED_HOSTS` | unset | Comma-separated extra hostnames permitted in `Host`. |
+| `MCP_ALLOWED_ORIGINS` | unset | Comma-separated extra browser origins permitted in `Origin`. |
 
-```python
-{
-    "symbol": str,
-    "strategy": str,
-    "current_price": float,
-    "expiration": str,
-    "days_to_expiration": int,
-    "analysis": {
-        # Credit Call Spread / Put Credit Spread
-        "strikes": {
-            "short_strike": float,
-            "long_strike": float
-        },
-        "metrics": {
-            "credit": float,
-            "max_loss": float,
-            "max_profit": float,
-            "probability_of_profit": float,
-            "risk_reward_ratio": float
-        },
-        "greeks": {
-            "net_delta": float,
-            "net_theta": float,
-            "net_gamma": float
-        }
-        
-        # Cash Secured Put
-        "strike": float,
-        "metrics": {
-            "premium": float,
-            "max_loss": float,
-            "assigned_cost_basis": float,
-            "return_if_otm": float,
-            "downside_protection": float
-        },
-        "greeks": {
-            "delta": float,
-            "theta": float,
-            "gamma": float
-        }
-        
-        # Covered Call
-        "strike": float,
-        "metrics": {
-            "premium": float,
-            "max_profit": float,
-            "max_profit_percent": float,
-            "upside_cap": float,
-            "premium_yield": float
-        },
-        "greeks": {
-            "position_delta": float,
-            "theta": float,
-            "gamma": float
-        }
-    }
-}
-```
+Put the reverse-proxy hostname in `MCP_ALLOWED_HOSTS` when fronting the container, otherwise the guard rejects the proxied `Host`. Running `uv run python optionsflow.py` remains the stdio-compatible default outside Docker.
 
-## Requirements
-
-- Python 3.12+
-- mcp
-- yfinance
-- pandas
-- numpy
-- scipy
-
-## Limitations
-
-- Data sourced from Yahoo Finance with potential delays
-- Options data availability depends on market hours
-- Rate limits based on Yahoo Finance API restrictions
-- Greeks calculations are theoretical and based on Black-Scholes model
-- Early assignment risk not factored into probability calculations
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Author
-
-[Todd Wolven](https://toddwolven.com/) - Lead AI Software Developer and open-source GenAI engineer
-
-## Acknowledgments
-
-- Built with the Model Context Protocol (MCP) by Anthropic
-- Data provided by [Yahoo Finance](https://finance.yahoo.com/)
-- Developed for use with Anthropic's Claude
+Run validation with `uv lock --check`, `uv run ruff check .`, `uv run mypy .`, `uv run pytest`, `uv build`, and `uv run python scripts/verify_wheel.py`. CI also builds the container and performs health plus MCP tool-discovery checks over Streamable HTTP. Domain/provider branch coverage is gated at 90%. Set `YFINANCE_LIVE=1` to opt into non-price-asserting live smoke tests.
