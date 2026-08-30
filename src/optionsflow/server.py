@@ -122,6 +122,28 @@ def analyze_basic_strategies(
         raise ToolError(f"Yahoo Finance request failed after bounded retries: {exc}") from exc
 
 
+def csv_env(name: str) -> list[str] | None:
+    """Parse a comma-separated allowlist environment variable."""
+    values = [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
+    return values or None
+
+
+def host_origin_protection() -> bool | str:
+    """Resolve the Host/Origin request-guard mode, enabled unless disabled.
+
+    Streamable HTTP servers bound to loopback remain reachable from a browser
+    through DNS rebinding, so Host and Origin headers are validated by default.
+    """
+    mode = os.getenv("MCP_HOST_ORIGIN_PROTECTION", "true").strip().lower()
+    if mode in {"false", "0", "off", "no"}:
+        return False
+    if mode == "auto":
+        return "auto"
+    if mode in {"true", "1", "on", "yes"}:
+        return True
+    raise ValueError("MCP_HOST_ORIGIN_PROTECTION must be true, auto, or false")
+
+
 def main():
     transport = os.getenv("MCP_TRANSPORT", "stdio")
     if transport == "stdio":
@@ -134,5 +156,8 @@ def main():
         host=os.getenv("MCP_HOST", "127.0.0.1"),
         port=int(os.getenv("MCP_PORT", "8000")),
         path=os.getenv("MCP_PATH", "/mcp"),
+        host_origin_protection=host_origin_protection(),
+        allowed_hosts=csv_env("MCP_ALLOWED_HOSTS"),
+        allowed_origins=csv_env("MCP_ALLOWED_ORIGINS"),
         show_banner=False,
     )
